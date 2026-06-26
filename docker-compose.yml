@@ -1,18 +1,55 @@
 version: '3.8'
 
 services:
-  postgres:
+  db:
     image: postgres:15-alpine
     container_name: netmon-db
     restart: always
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: netmonpassword123
       POSTGRES_DB: netmon
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    networks:
+      - netmon-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: netmon-backend
+    restart: always
+    environment:
+      - DB_TYPE=postgres
+      - DATABASE_URL=postgres://postgres:netmonpassword123@db:5432/netmon
+      - ADMIN_PASSWORD=admin123
+      - PORT=5005
+    ports:
+      - "5005:5005"
+    depends_on:
+      - db
+    networks:
+      - netmon-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: netmon-frontend
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    networks:
+      - netmon-network
 
 volumes:
   postgres_data:
+
+networks:
+  netmon-network:
+    driver: bridge
