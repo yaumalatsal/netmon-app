@@ -136,6 +136,102 @@ const nodeTypes = {
 };
 
 export default function App() {
+  // Authentication States
+  const [authToken, setAuthToken] = useState<string | null>(localStorage.getItem('netmon_auth_token'));
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [authChecking, setAuthChecking] = useState<boolean>(true);
+  const [loginPassword, setLoginPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+
+  // Authenticated fetch wrapper to automatically attach Authorization header
+  const authFetch = useCallback(async (url: string, options: RequestInit = {}) => {
+    const token = localStorage.getItem('netmon_auth_token') || '';
+    const headers = {
+      ...options.headers,
+      'Authorization': `Bearer ${token}`
+    };
+    const res = await fetch(url, { ...options, headers });
+    if (res.status === 401 && !url.includes('/api/auth/verify') && !url.includes('/api/auth/login')) {
+      localStorage.removeItem('netmon_auth_token');
+      setIsAuthenticated(false);
+      setAuthToken(null);
+    }
+    return res;
+  }, []);
+
+  // Handle Login submission
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoggingIn(true);
+    setLoginError('');
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: loginPassword })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        localStorage.setItem('netmon_auth_token', data.token);
+        setAuthToken(data.token);
+        setIsAuthenticated(true);
+        setLoginPassword('');
+      } else {
+        setLoginError(data.error || 'Incorrect password');
+      }
+    } catch (err: any) {
+      setLoginError('Could not connect to server. Check backend status.');
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  // Handle Logout
+  const handleLogout = () => {
+    localStorage.removeItem('netmon_auth_token');
+    setAuthToken(null);
+    setIsAuthenticated(false);
+  };
+
+  // Verify token on app load
+  useEffect(() => {
+    async function verifyToken() {
+      const token = localStorage.getItem('netmon_auth_token');
+      if (!token) {
+        setIsAuthenticated(false);
+        setAuthChecking(false);
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/verify', {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.authenticated) {
+            setIsAuthenticated(true);
+          } else {
+            localStorage.removeItem('netmon_auth_token');
+            setIsAuthenticated(false);
+          }
+        } else {
+          localStorage.removeItem('netmon_auth_token');
+          setIsAuthenticated(false);
+        }
+      } catch (e) {
+        console.error('Failed to verify token on load:', e);
+        localStorage.removeItem('netmon_auth_token');
+        setIsAuthenticated(false);
+      } finally {
+        setAuthChecking(false);
+      }
+    }
+    verifyToken();
+  }, []);
+
   // Navigation & UI States
   const [activeTab, setActiveTab] = useState<'topology' | 'inventory' | 'settings'>('topology');
   const [sites, setSites] = useState<any[]>([]);
@@ -159,9 +255,10 @@ export default function App() {
   const [saveStatus, setSaveStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
     async function loadSettings() {
       try {
-        const res = await fetch('/api/settings');
+        const res = await authFetch('/api/settings');
         if (res.ok) {
           const data = await res.json();
           setSettingsData({
@@ -177,14 +274,14 @@ export default function App() {
       }
     }
     loadSettings();
-  }, []);
+  }, [isAuthenticated, authFetch]);
 
   const handleTestConnection = async () => {
     setTestingConnection(true);
     setTestLogs('Starting connection test...\n');
     setTestSuccess(null);
     try {
-      const res = await fetch('/api/settings/test', {
+      const res = await authFetch('/api/settings/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings)
@@ -210,7 +307,7 @@ export default function App() {
     setSavingSettings(true);
     setSaveStatus(null);
     try {
-      const res = await fetch('/api/settings', {
+      const res = await authFetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings)
@@ -238,7 +335,7 @@ export default function App() {
   const handleExportConfig = async () => {
     setBackupLogs('Contacting backend to retrieve backup data...');
     try {
-      const res = await fetch('/api/backup/export');
+      const res = await authFetch('/api/backup/export');
       if (res.ok) {
         const data = await res.json();
         const jsonStr = JSON.stringify(data, null, 2);
@@ -281,7 +378,7 @@ export default function App() {
 
         setBackupLogs(prev => prev + 'Uploading backup payload to backend server...\n');
         
-        const res = await fetch('/api/backup/import', {
+        const res = await authFetch('/api/backup/import', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: jsonStr
@@ -407,14 +504,14 @@ export default function App() {
   const fetchData = useCallback(async (siteId: number) => {
     try {
       // Fetch devices
-      const devRes = await fetch(`/api/devices?site_id=${siteId}`);
+      const devRes = await authFetch(`/api/devices?site_id=${siteId}`);
       if (devRes.ok) {
         const devData = await devRes.json();
         setDevices(devData);
       }
 
       // Fetch topology
-      const topoRes = await fetch(`/api/topology?site_id=${siteId}`);
+      const topoRes = await authFetch(`/api/topology?site_id=${siteId}`);
       if (topoRes.ok) {
         const topoData = await topoRes.json();
         setRawNodes(topoData.nodes || []);
@@ -422,14 +519,14 @@ export default function App() {
       }
 
       // Fetch traffic history
-      const trafficRes = await fetch(`/api/traffic?site_id=${siteId}`);
+      const trafficRes = await authFetch(`/api/traffic?site_id=${siteId}`);
       if (trafficRes.ok) {
         const tData = await trafficRes.json();
         setTrafficData(tData);
       }
 
       // Fetch ISP health status (Proof of Concept)
-      const ispRes = await fetch(`/api/isp-health?site_id=${siteId}`);
+      const ispRes = await authFetch(`/api/isp-health?site_id=${siteId}`);
       if (ispRes.ok) {
         const ispData = await ispRes.json();
         setIspHealth(ispData.current);
@@ -438,13 +535,15 @@ export default function App() {
     } catch (e) {
       console.error('REST Fetch Error:', e);
     }
-  }, []);
+  }, [authFetch]);
 
   // Initial Boot
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     async function loadSites() {
       try {
-        const res = await fetch('/api/sites');
+        const res = await authFetch('/api/sites');
         if (res.ok) {
           const data = await res.json();
           setSites(data);
@@ -460,7 +559,7 @@ export default function App() {
 
     async function loadAlerts() {
       try {
-        const res = await fetch('/api/alerts');
+        const res = await authFetch('/api/alerts');
         if (res.ok) {
           const data = await res.json();
           setAlerts(data);
@@ -470,7 +569,7 @@ export default function App() {
 
     loadSites();
     loadAlerts();
-  }, [fetchData]);
+  }, [isAuthenticated, fetchData, authFetch]);
 
   // Handle Site Change
   const handleSiteChange = (id: number) => {
@@ -480,12 +579,15 @@ export default function App() {
 
   // WebSocket Subscriber
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     let ws: WebSocket;
     let reconnectTimeout: any;
 
     function connect() {
       console.log('Connecting to WebSocket...');
-      ws = new WebSocket(WS_URL);
+      const token = authToken || '';
+      ws = new WebSocket(`${WS_URL}?token=${token}`);
 
       ws.onopen = () => {
         console.log('WebSocket connected.');
@@ -612,14 +714,14 @@ export default function App() {
       if (ws) ws.close();
       clearTimeout(reconnectTimeout);
     };
-  }, [selectedSiteId]);
+  }, [isAuthenticated, selectedSiteId, authToken]);
 
   // Handle Drag-and-Connect Manual Topology Edge Overrides
   const onConnect = useCallback((params: any) => {
     if (!params.source || !params.target) return;
 
     // Send connection assignment to API
-    fetch('/api/topology/edges', {
+    authFetch('/api/topology/edges', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -636,7 +738,7 @@ export default function App() {
       }
     })
     .catch(err => console.error('Error creating manual edge override:', err));
-  }, [selectedSiteId, fetchData]);
+  }, [selectedSiteId, fetchData, authFetch]);
 
   // Handle Device Save
   const handleSaveDevice = async (e: React.FormEvent) => {
@@ -644,7 +746,7 @@ export default function App() {
     if (!editingDevice) return;
 
     try {
-      const res = await fetch(`/api/devices/${editingDevice.id}`, {
+      const res = await authFetch(`/api/devices/${editingDevice.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editingDevice)
@@ -665,7 +767,7 @@ export default function App() {
     if (!newSiteName || !newSiteCidr) return;
 
     try {
-      const res = await fetch('/api/sites', {
+      const res = await authFetch('/api/sites', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -693,7 +795,7 @@ export default function App() {
   // Clear/Dismiss Alert
   const handleDismissAlert = async (id: string) => {
     try {
-      await fetch('/api/alerts/clear', {
+      await authFetch('/api/alerts/clear', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id })
@@ -830,6 +932,106 @@ export default function App() {
     return devices.filter(d => d.type === 'printer');
   }, [devices]);
 
+  if (authChecking) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        backgroundColor: 'var(--bg-primary)',
+        color: '#fff',
+        fontFamily: 'var(--font-body)'
+      }}>
+        <div className="glass-card" style={{ padding: '40px', textAlign: 'center', maxWidth: '400px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px' }}>
+          <Activity className="animate-pulse" size={48} style={{ color: 'var(--accent-blue)' }} />
+          <h2 style={{ fontSize: '18px', fontWeight: 600 }}>Securing Connection</h2>
+          <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Verifying administrator credentials...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh',
+        backgroundColor: 'var(--bg-primary)',
+        color: '#fff',
+        fontFamily: 'var(--font-body)',
+        padding: '20px',
+        backgroundImage: 'radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.1) 0, transparent 50%), radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.1) 0, transparent 50%)'
+      }}>
+        <div className="glass-card" style={{ width: '100%', maxWidth: '420px', padding: '36px', display: 'flex', flexDirection: 'column', gap: '24px', boxShadow: 'var(--shadow-lg)' }}>
+          <div style={{ textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+            <div style={{ background: 'linear-gradient(135deg, var(--accent-blue), var(--accent-violet))', padding: '12px', borderRadius: '16px', display: 'inline-flex', boxShadow: '0 0 20px rgba(59, 130, 246, 0.4)' }}>
+              <Shield size={32} style={{ color: '#fff' }} />
+            </div>
+            <div>
+              <h2 style={{ fontSize: '24px', fontWeight: '800', background: 'linear-gradient(to right, #ffffff, #94a3b8)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', letterSpacing: '-0.02em' }}>
+                NETOPS SECURITY
+              </h2>
+              <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px' }}>Enter administrator password to access dashboard</p>
+            </div>
+          </div>
+
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', letterSpacing: '0.05em' }}>PASSWORD</label>
+              <input
+                type="password"
+                className="glass-input"
+                placeholder="••••••••••••"
+                value={loginPassword}
+                onChange={(e) => {
+                  setLoginPassword(e.target.value);
+                  if (loginError) setLoginError('');
+                }}
+                autoFocus
+                required
+                style={{ width: '100%', fontSize: '15px' }}
+              />
+            </div>
+
+            {loginError && (
+              <div style={{
+                background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.2)',
+                borderRadius: '8px', padding: '10px 14px', color: '#f87171', fontSize: '13px',
+                display: 'flex', alignItems: 'center', gap: '8px'
+              }}>
+                <AlertTriangle size={16} />
+                <span>{loginError}</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="glass-button"
+              disabled={isLoggingIn}
+              style={{
+                width: '100%', justifyContent: 'center', padding: '12px', fontSize: '15px',
+                cursor: isLoggingIn ? 'not-allowed' : 'pointer', opacity: isLoggingIn ? 0.7 : 1
+              }}
+            >
+              {isLoggingIn ? (
+                <>
+                  <RefreshCw className="animate-spin" size={18} />
+                  <span>Authenticating...</span>
+                </>
+              ) : (
+                <span>Access Dashboard</span>
+              )}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
       
@@ -884,8 +1086,19 @@ export default function App() {
             onClick={() => fetchData(selectedSiteId)} 
             className="glass-button glass-button-secondary"
             style={{ padding: '8px 12px' }}
+            title="Refresh Dashboard"
           >
             <RefreshCw size={14} />
+          </button>
+
+          {/* Logout Button */}
+          <button 
+            onClick={handleLogout} 
+            className="glass-button glass-button-secondary"
+            style={{ padding: '8px 12px' }}
+            title="Logout"
+          >
+            <Shield size={14} style={{ color: '#ef4444' }} />
           </button>
         </div>
       </header>

@@ -7,6 +7,7 @@ import { startPoller, setWsBroadcastCallback, getActiveAlerts, clearAlert, getIs
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
+import crypto from 'crypto';
 
 dotenv.config();
 
@@ -14,13 +15,47 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
+const AUTH_TOKEN = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest('hex');
+
+// Authentication middleware to secure the API
+function requireAuth(req: Request, res: Response, next: any) {
+  if (req.path === '/' || req.path === '/api/auth/login') {
+    return next();
+  }
+  
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ error: 'Unauthorized. Missing authentication token.' });
+    return;
+  }
+  const token = authHeader.substring(7);
+  if (token !== AUTH_TOKEN) {
+    res.status(401).json({ error: 'Unauthorized. Invalid authentication token.' });
+    return;
+  }
+  next();
+}
+
+app.use(requireAuth);
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
 // Track connected WebSocket clients
 const clients = new Set<WebSocket>();
 
-wss.on('connection', async (ws) => {
+wss.on('connection', async (ws, req) => {
+  // Extract token from query parameters
+  const urlParams = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
+  const token = urlParams.searchParams.get('token');
+  
+  if (token !== AUTH_TOKEN) {
+    console.log('[WebSocket] Connection rejected: Invalid or missing token');
+    ws.close(4001, 'Unauthorized');
+    return;
+  }
+
   clients.add(ws);
   console.log(`[WebSocket] Client connected. Total: ${clients.size}`);
 
@@ -57,6 +92,36 @@ setWsBroadcastCallback((data: any) => {
 });
 
 // --- REST API ENDPOINTS ---
+
+// 0. Authentication Endpoints
+app.post('/api/auth/login', (req: Request, res: Response) => {
+  const { password } = req.body;
+  if (!password) {
+    res.status(400).json({ error: 'Password is required' });
+    return;
+  }
+  
+  const incomingHash = crypto.createHash('sha256').update(password).digest('hex');
+  if (incomingHash === AUTH_TOKEN) {
+    res.json({ success: true, token: AUTH_TOKEN });
+  } else {
+    res.status(401).json({ success: false, error: 'Incorrect administrator password' });
+  }
+});
+
+app.get('/api/auth/verify', (req: Request, res: Response) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    res.status(401).json({ authenticated: false });
+    return;
+  }
+  const token = authHeader.substring(7);
+  if (token === AUTH_TOKEN) {
+    res.json({ authenticated: true });
+  } else {
+    res.status(401).json({ authenticated: false });
+  }
+});
 
 // 1. Sites Endpoints
 app.get('/api/sites', async (req: Request, res: Response) => {
