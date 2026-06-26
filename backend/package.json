@@ -1,0 +1,31 @@
+{
+  "name": "netmon-backend",
+  "version": "1.0.0",
+  "description": "Network Monitoring Backend Server",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "nodemon --watch src -e ts,json --exec ts-node src/index.ts",
+    "seed": "ts-node src/seeder.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "net-snmp": "^3.9.0",
+    "pg": "^8.12.0",
+    "sqlite3": "^5.1.7",
+    "ws": "^8.17.1"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.14.9",
+    "@types/pg": "^8.11.6",
+    "@types/ws": "^8.5.10",
+    "nodemon": "^3.1.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.2"
+  }
+}
