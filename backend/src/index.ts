@@ -349,6 +349,120 @@ app.post('/api/topology/edges', async (req: Request, res: Response) => {
   }
 });
 
+// 3.8 Configuration Backup Endpoints (Export/Import)
+app.get('/api/backup/export', async (req: Request, res: Response) => {
+  try {
+    const sites = await query("SELECT * FROM sites");
+    const devices = await query("SELECT * FROM devices");
+    const edges = await query("SELECT * FROM topology_edges");
+    res.json({
+      version: "1.0",
+      timestamp: new Date().toISOString(),
+      sites,
+      devices,
+      topology_edges: edges
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/backup/import', async (req: Request, res: Response) => {
+  const { sites, devices, topology_edges } = req.body;
+  if (!Array.isArray(sites) || !Array.isArray(devices) || !Array.isArray(topology_edges)) {
+    res.status(400).json({ error: 'Invalid backup format. Must contain sites, devices, and topology_edges arrays.' });
+    return;
+  }
+
+  const logs: string[] = [];
+  try {
+    // 1. Restore Sites
+    const siteIdMap: Record<number, number> = {}; // Old site_id -> New site_id
+    for (const site of sites) {
+      const existing = await query("SELECT id FROM sites WHERE name = $1", [site.name]);
+      if (existing.length > 0) {
+        siteIdMap[site.id] = existing[0].id;
+        logs.push(`Site '${site.name}' already exists, skipping creation.`);
+      } else {
+        const result = await query(
+          "INSERT INTO sites (name, network_cidr, address_notes) VALUES ($1, $2, $3)",
+          [site.name, site.network_cidr, site.address_notes || '']
+        );
+        let newSiteId = result.lastID;
+        if (!newSiteId) {
+          const inserted = await query("SELECT id FROM sites WHERE name = $1", [site.name]);
+          newSiteId = inserted[0]?.id;
+        }
+        siteIdMap[site.id] = newSiteId;
+        logs.push(`Imported Site '${site.name}' (ID: ${newSiteId})`);
+      }
+    }
+
+    // 2. Restore Devices
+    const deviceIdMap: Record<number, number> = {}; // Old device_id -> New device_id
+    for (const dev of devices) {
+      const targetSiteId = siteIdMap[dev.site_id];
+      if (!targetSiteId) {
+        logs.push(`Skipping device '${dev.friendly_name}': Connected site not found in import.`);
+        continue;
+      }
+
+      const existing = await query("SELECT id FROM devices WHERE mac_address = $1", [dev.mac_address]);
+      if (existing.length > 0) {
+        await query(
+          "UPDATE devices SET site_id = $1, friendly_name = $2, type = $3, current_ip = $4, location_dept = $5, asset_tag = $6, notes = $7, source = $8 WHERE mac_address = $9",
+          [targetSiteId, dev.friendly_name, dev.type, dev.current_ip, dev.location_dept || '', dev.asset_tag || '', dev.notes || '', dev.source || 'discovered', dev.mac_address]
+        );
+        deviceIdMap[dev.id] = existing[0].id;
+        logs.push(`Updated existing device '${dev.friendly_name}' (${dev.mac_address})`);
+      } else {
+        const result = await query(
+          "INSERT INTO devices (site_id, friendly_name, type, mac_address, current_ip, location_dept, asset_tag, notes, source) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+          [targetSiteId, dev.friendly_name, dev.type, dev.mac_address, dev.current_ip, dev.location_dept || '', dev.asset_tag || '', dev.notes || '', dev.source || 'discovered']
+        );
+        let newDevId = result.lastID;
+        if (!newDevId) {
+          const inserted = await query("SELECT id FROM devices WHERE mac_address = $1", [dev.mac_address]);
+          newDevId = inserted[0]?.id;
+        }
+        deviceIdMap[dev.id] = newDevId;
+        logs.push(`Imported device '${dev.friendly_name}' (${dev.mac_address})`);
+      }
+    }
+
+    // 3. Restore Topology Edges
+    let importedEdgesCount = 0;
+    for (const edge of topology_edges) {
+      const targetSiteId = siteIdMap[edge.site_id];
+      const newSwitchId = edge.switch_device_id ? deviceIdMap[edge.switch_device_id] : null;
+      const newConnectedId = deviceIdMap[edge.connected_device_id];
+
+      if (!targetSiteId || !newConnectedId) {
+        continue;
+      }
+
+      await query(
+        "DELETE FROM topology_edges WHERE connected_device_id = $1",
+        [newConnectedId]
+      );
+
+      await query(
+        "INSERT INTO topology_edges (site_id, switch_device_id, switch_port, connected_device_id, is_manual) VALUES ($1, $2, $3, $4, $5)",
+        [targetSiteId, newSwitchId, edge.switch_port, newConnectedId, edge.is_manual ? 1 : 0]
+      );
+      importedEdgesCount++;
+    }
+    logs.push(`Restored ${importedEdgesCount} topology connection lines.`);
+
+    res.json({
+      success: true,
+      logs: logs.join('\n')
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message, logs: logs.join('\n') });
+  }
+});
+
 // 4. Interface Traffic History Endpoint
 app.get('/api/traffic', async (req: Request, res: Response) => {
   const { site_id } = req.query;

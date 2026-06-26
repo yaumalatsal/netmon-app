@@ -231,6 +231,89 @@ export default function App() {
     }
   };
 
+  // Backup & Restore Configuration States
+  const [importingConfig, setImportingConfig] = useState(false);
+  const [backupLogs, setBackupLogs] = useState('');
+
+  const handleExportConfig = async () => {
+    setBackupLogs('Contacting backend to retrieve backup data...');
+    try {
+      const res = await fetch('/api/backup/export');
+      if (res.ok) {
+        const data = await res.json();
+        const jsonStr = JSON.stringify(data, null, 2);
+        
+        // Trigger file download
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const dateStr = new Date().toISOString().split('T')[0];
+        link.download = `netops_backup_${dateStr}.json`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        setBackupLogs(`✅ Configuration backup successfully generated and downloaded.\nBackup includes:\n- ${data.sites?.length || 0} Sites\n- ${data.devices?.length || 0} Devices\n- ${data.topology_edges?.length || 0} Topology Connection Lines.`);
+      } else {
+        setBackupLogs(`❌ Failed to export configuration backup. Status: ${res.status}`);
+      }
+    } catch (e: any) {
+      setBackupLogs(`❌ Error exporting backup: ${e.message}`);
+    }
+  };
+
+  const handleImportConfig = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setImportingConfig(true);
+    setBackupLogs(`Reading backup file: ${file.name}...\n`);
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const jsonStr = event.target?.result as string;
+        
+        // Verify JSON parses locally before sending
+        JSON.parse(jsonStr);
+
+        setBackupLogs(prev => prev + 'Uploading backup payload to backend server...\n');
+        
+        const res = await fetch('/api/backup/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: jsonStr
+        });
+
+        if (res.ok) {
+          const result = await res.json();
+          setBackupLogs(`✅ Import successfully completed!\n\nImport logs:\n${result.logs}`);
+          // Refresh site data immediately
+          fetchData(selectedSiteId);
+        } else {
+          const errRes = await res.json().catch(() => ({ error: 'Unknown server error' }));
+          setBackupLogs(`❌ Import failed. Status: ${res.status}\nError details:\n${errRes.error || 'Unknown error'}\n\nLogs:\n${errRes.logs || ''}`);
+        }
+      } catch (err: any) {
+        setBackupLogs(prev => prev + `\n❌ Parsing error: ${err.message}`);
+      } finally {
+        setImportingConfig(false);
+        // Clear input file
+        e.target.value = '';
+      }
+    };
+
+    reader.onerror = () => {
+      setBackupLogs(prev => prev + '\n❌ Failed to read file.');
+      setImportingConfig(false);
+      e.target.value = '';
+    };
+
+    reader.readAsText(file);
+  };
+
   // Search & Filter
   const [searchQuery, setSearchQuery] = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
@@ -1138,6 +1221,60 @@ export default function App() {
                   </pre>
                 </div>
               </div>
+
+              {/* BACKUP & RESTORE SECTION */}
+              <div style={{ borderTop: '1px solid var(--border-glass)', paddingTop: '24px', display: 'flex', flexDirection: 'column', gap: '16px', marginTop: '12px' }}>
+                <div>
+                  <h4 style={{ fontSize: '15px', fontWeight: '700' }}>Dashboard Configuration Backup</h4>
+                  <p style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                    Export your custom sites, device assets, and manual topology connections to a JSON file, or restore them from an existing backup.
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center' }}>
+                  <button 
+                    onClick={handleExportConfig}
+                    type="button"
+                    className="glass-button glass-button-secondary"
+                    style={{ padding: '10px 20px', display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(255,255,255,0.03)', border: '1px solid var(--border-glass)' }}
+                  >
+                    <Database size={16} style={{ color: 'var(--accent-cyan)' }} /> Export Backup (.json)
+                  </button>
+
+                  <div style={{ position: 'relative' }}>
+                    <input 
+                      type="file" 
+                      accept=".json"
+                      onChange={handleImportConfig}
+                      style={{ display: 'none' }}
+                      id="import-backup-file"
+                      disabled={importingConfig}
+                    />
+                    <label 
+                      htmlFor="import-backup-file"
+                      className="glass-button"
+                      style={{ 
+                        padding: '10px 20px', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer',
+                        background: 'linear-gradient(135deg, var(--accent-cyan), var(--accent-blue))',
+                        opacity: importingConfig ? 0.6 : 1, borderRadius: '8px', fontWeight: 'bold'
+                      }}
+                    >
+                      <Database size={16} /> {importingConfig ? 'Importing...' : 'Import Backup (.json)'}
+                    </label>
+                  </div>
+                </div>
+
+                {backupLogs && (
+                  <pre style={{
+                    background: '#0a0d16', border: '1px solid var(--border-glass)',
+                    borderRadius: '8px', padding: '12px', color: '#a7f3d0', fontFamily: 'monospace',
+                    fontSize: '11px', overflowY: 'auto', whiteSpace: 'pre-wrap', maxHeight: '160px'
+                  }}>
+                    {backupLogs}
+                  </pre>
+                )}
+              </div>
+
             </div>
           )}
         </section>
