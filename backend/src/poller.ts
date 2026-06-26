@@ -151,12 +151,38 @@ async function pingIp(ip: string): Promise<{ online: boolean; latency: number | 
   return { online: false, latency: null };
 }
 
+// Scan and update existing unclassified devices based on the new smart infer logic
+export async function updateUnclassifiedDevices() {
+  console.log('[Poller] Scanning and deduplicating types of unclassified devices...');
+  try {
+    const devices = await query("SELECT id, friendly_name, type FROM devices");
+    let updatedCount = 0;
+    for (const dev of devices) {
+      if (dev.type === 'unclassified' || !dev.type) {
+        const deducedType = inferDeviceType(dev.friendly_name);
+        if (deducedType !== 'unclassified') {
+          await query("UPDATE devices SET type = $1 WHERE id = $2", [deducedType, dev.id]);
+          updatedCount++;
+        }
+      }
+    }
+    if (updatedCount > 0) {
+      console.log(`[Poller] Successfully deduced and updated ${updatedCount} device types from hostnames!`);
+    }
+  } catch (err: any) {
+    console.error('[Poller] Error in updating unclassified devices:', err.message);
+  }
+}
+
 // Polling loop
 export async function startPoller() {
   console.log(`Starting Network Poller (Interval: ${POLL_INTERVAL_MS}ms, Simulation: ${SIMULATION_MODE})`);
   
   // Seed initial switches and routers in DB if they don't exist
   await seedInfrastructureDevices();
+
+  // Smart deduction run for existing items
+  await updateUnclassifiedDevices();
 
   // Run initial poll cycle
   runPollCycle().catch(err => console.error('Error in initial poll cycle:', err));
@@ -167,14 +193,38 @@ export async function startPoller() {
   }, POLL_INTERVAL_MS);
 }
 
-function inferDeviceType(comment: string): string {
-  const c = comment.toLowerCase();
-  if (c.includes('printer')) return 'printer';
-  if (c.includes('pc') || c.includes('laptop') || c.includes('komputer') || c.includes('desktop')) return 'pc';
-  if (c.includes('hp') || c.includes('handphone') || c.includes('phone') || c.includes('mobile')) return 'phone';
-  if (c.includes('ap') || c.includes('access point') || c.includes('wifi') || c.includes('controller')) return 'ap';
-  if (c.includes('mesin absen') || c.includes('absen') || c.includes('attendance')) return 'attendance_machine';
-  if (c.includes('switch') || c.includes('router') || c.includes('hub')) return 'switch';
+function inferDeviceType(nameOrHost: string): string {
+  const c = nameOrHost.toLowerCase();
+  
+  // 1. Printers
+  const printerBrands = ['printer', 'epson', 'canon', 'brother', 'hp-laserjet', 'laserjet', 'deskjet', 'ricoh', 'xerox', 'fuji', 'kyocera'];
+  if (printerBrands.some(brand => c.includes(brand))) return 'printer';
+  
+  // 2. Computers/Laptops
+  const pcKeywords = ['pc', 'laptop', 'desktop', 'notebook', 'macbook', 'imac', 'thinkpad', 'latitude', 'inspiron', 'optiplex', 'workstation', 'komputer', 'win-'];
+  if (pcKeywords.some(kw => c.includes(kw))) return 'pc';
+  
+  // 3. Mobile Phones / Tablets
+  const phoneBrands = [
+    'phone', 'mobile', 'handphone', 'hp', 'android', 'iphone', 'ipad', 
+    'oppo', 'redmi', 'xiaomi', 'samsung', 'vivo', 'realme', 'huawei', 
+    'galaxy', 'oneplus', 'pixel', 'infinix', 'tecno', 'asus-t', 'sony-x',
+    'mi-'
+  ];
+  if (phoneBrands.some(brand => c.includes(brand))) return 'phone';
+  
+  // 4. Access Points
+  const apKeywords = ['ap', 'access point', 'wifi', 'unifi', 'controller', 'ubnt', 'tp-link', 'tplink', 'ruckus', 'aruba', 'cisco-ap'];
+  if (apKeywords.some(kw => c.includes(kw))) return 'ap';
+  
+  // 5. Attendance / Fingerprint
+  const attKeywords = ['absen', 'attendance', 'mesin-absen', 'zkteco', 'finger', 'solution-absen'];
+  if (attKeywords.some(kw => c.includes(kw))) return 'attendance_machine';
+  
+  // 6. Network Infrastructure
+  const networkKeywords = ['switch', 'router', 'hub', 'mikrotik', 'ruijie', 'cisco', 'edge', 'gateway', 'olt', 'ont'];
+  if (networkKeywords.some(kw => c.includes(kw))) return 'switch';
+  
   return 'unclassified';
 }
 
